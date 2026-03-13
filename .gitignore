@@ -1,0 +1,16 @@
+# Ignorar o arquivo de variáveis de ambiente
+.env
+
+# Ignorar pastas de cache e compilação do Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignorar pastas de logs, downloads e temporários
+downloads/
+*.log
+
+# Ignorar VSCode ou PyCharm configs
+.vscode/
+.idea/

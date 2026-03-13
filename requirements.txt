@@ -1,3 +1,6 @@
 Flask
 requests
 gunicorn
+PyQt6
+psycopg2-binary
+python-dotenv
