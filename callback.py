@@ -11,6 +11,10 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(me
 app = Flask(__name__)
 CORS(app)
 
+@app.route("/")
+def home():
+    return "Mini ERP Callback Online", 200
+
 # --------------------- CALLBACK ML ---------------------
 @app.route("/ml/callback", methods=["GET"])
 def ml_callback():
