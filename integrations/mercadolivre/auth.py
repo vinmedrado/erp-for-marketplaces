@@ -109,3 +109,41 @@ def update_tokens(cliente_id: int, access_token: str, refresh_token: str):
     except Exception as e:
         logging.error(f"Erro ao atualizar tokens no banco para cliente {cliente_id}: {e}")
         raise
+
+def refresh_ml_token(cliente_id: int):
+    """
+    Usa o refresh_token do cliente para gerar um novo access_token e salvar no DB.
+    Retorna os novos tokens.
+    """
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT refresh_token FROM ml_tokens WHERE cliente_id = %s", (cliente_id,))
+    row = cur.fetchone()
+    if not row:
+        raise Exception("Refresh token não encontrado para esse cliente")
+    refresh_token = row[0]
+
+    # Requisição ao ML para gerar novo access_token
+    response = requests.post(
+        "https://api.mercadolibre.com/oauth/token",
+        data={
+            "grant_type": "refresh_token",
+            "client_id": CLIENT_ID,
+            "client_secret": CLIENT_SECRET,
+            "refresh_token": refresh_token
+        }
+    )
+    data = response.json()
+    if "access_token" not in data:
+        raise Exception(f"Falha ao atualizar token: {data}")
+
+    # Atualiza no banco
+    cur.execute("""
+        UPDATE ml_tokens
+        SET access_token = %s, refresh_token = %s, expires_in = %s
+        WHERE cliente_id = %s
+    """, (data["access_token"], data["refresh_token"], data["expires_in"], cliente_id))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return data

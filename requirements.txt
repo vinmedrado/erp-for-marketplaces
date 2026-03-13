@@ -4,3 +4,4 @@ gunicorn
 PyQt6
 psycopg2-binary
 python-dotenv
+Flask_cors

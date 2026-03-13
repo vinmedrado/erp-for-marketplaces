@@ -4,30 +4,24 @@ import os
 from datetime import datetime
 from PyQt6.QtWidgets import (
     QWidget, QTabWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QComboBox, QTextEdit, QInputDialog
+    QPushButton, QLabel, QComboBox, QTextEdit
 )
 from PyQt6.QtGui import QTextCursor
 from PyQt6.QtCore import Qt
-
 import psycopg2
 from dotenv import load_dotenv
+import webbrowser
 
 # Carrega variáveis do .env
 load_dotenv()
 
-# DB
+# --------------------- DB ---------------------
 DB_NAME = os.getenv("DB_NAME")
 DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
 DB_HOST = os.getenv("DB_HOST")
 DB_PORT = os.getenv("DB_PORT")
 
-# Integrações
-from integrations.mercadolivre.auth import generate_auth_link, exchange_code_for_token
-from integrations.mercadolivre.api import get_items
-from suppliers.wedrop import wedrop_catalog
-
-# --------------------- FUNÇÃO DB ---------------------
 def get_db_connection():
     return psycopg2.connect(
         dbname=DB_NAME,
@@ -36,6 +30,11 @@ def get_db_connection():
         host=DB_HOST,
         port=DB_PORT
     )
+
+# --------------------- Integrações ---------------------
+from integrations.mercadolivre.auth import generate_auth_link, exchange_code_for_token, refresh_ml_token
+from integrations.mercadolivre.api import get_items
+from suppliers.wedrop import wedrop_catalog
 
 # --------------------- ABA DE MARKETPLACE ---------------------
 class MarketplaceTab(QWidget):
@@ -87,6 +86,12 @@ class MainWindow(QWidget):
         main_layout.setContentsMargins(12, 12, 12, 12)
         main_layout.setSpacing(10)
 
+        # Status de DB
+        self.db_status = QLabel("DB: 🔴 Não conectado")
+        self.db_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.db_status.setStyleSheet("color: red; font-weight: bold;")
+        main_layout.addWidget(self.db_status)
+
         # Seletor de cliente
         self.cliente_select = QComboBox()
         new_cliente_btn = QPushButton("Novo Cliente")
@@ -115,7 +120,7 @@ class MainWindow(QWidget):
         self.ml_tab = MarketplaceTab(
             "Mercado Livre", "#FFAA00",
             actions={
-                "Atualizar Tokens": self.update_ml_tokens,
+                "Autorizar Cliente": self.open_ml_auth_link,
                 "Listar Produtos": self.list_ml_items
             }
         )
@@ -131,7 +136,7 @@ class MainWindow(QWidget):
         self.tabs.addTab(self.wedrop_tab, "Wedrop")
         main_layout.addWidget(self.tabs)
 
-        # Log minimalista
+        # Log
         self.log = QTextEdit()
         self.log.setReadOnly(True)
         self.log.setStyleSheet("""
@@ -149,9 +154,10 @@ class MainWindow(QWidget):
         self.load_clientes()
 
     # --------------------- LOG ---------------------
-    def append_log(self, message: str):
+    def append_log(self, message: str, level="info"):
         timestamp = datetime.now().strftime("%H:%M:%S")
-        self.log.append(f"[{timestamp}] {message}")
+        color = "red" if level=="error" else "cyan"
+        self.log.append(f"<span style='color:{color};'>[{timestamp}] {message}</span>")
         self.log.moveCursor(QTextCursor.MoveOperation.End)
 
     # --------------------- CLIENTES ---------------------
@@ -164,14 +170,26 @@ class MainWindow(QWidget):
             rows = cur.fetchall()
             cur.close()
             conn.close()
+
+            if rows:
+                self.db_status.setText("DB: 🟢 Conectado")
+                self.db_status.setStyleSheet("color: green; font-weight: bold;")
+            else:
+                self.db_status.setText("DB: 🟡 Conectado, sem clientes")
+                self.db_status.setStyleSheet("color: orange; font-weight: bold;")
+
             self.clientes = {str(row[0]): row[1] for row in rows}
             for id_, nome in self.clientes.items():
                 self.cliente_select.addItem(nome, userData=id_)
-            self.append_log(f"[INFO] {len(rows)} cliente(s) carregado(s)")
+
+            self.append_log(f"{len(rows)} cliente(s) carregado(s)")
         except Exception as e:
-            self.append_log(f"[ERROR] Falha ao carregar clientes: {e}")
+            self.db_status.setText("DB: 🔴 Erro ao conectar")
+            self.db_status.setStyleSheet("color: red; font-weight: bold;")
+            self.append_log(f"Falha ao carregar clientes: {e}", level="error")
 
     def create_new_cliente(self):
+        from PyQt6.QtWidgets import QInputDialog
         nome, ok = QInputDialog.getText(self, "Novo Cliente", "Digite o nome do cliente:")
         if not ok or not nome:
             return
@@ -183,44 +201,55 @@ class MainWindow(QWidget):
             conn.commit()
             cur.close()
             conn.close()
-            self.append_log(f"[INFO] Cliente '{nome}' criado com ID {cliente_id}")
+            self.append_log(f"Cliente '{nome}' criado com ID {cliente_id}")
             self.load_clientes()
             self.cliente_select.setCurrentIndex(self.cliente_select.count()-1)
         except Exception as e:
-            self.append_log(f"[ERROR] Falha ao criar cliente: {e}")
+            self.append_log(f"Falha ao criar cliente: {e}", level="error")
 
     # --------------------- MERCADO LIVRE ---------------------
-    def update_ml_tokens(self):
+    def open_ml_auth_link(self):
         cliente_id = self.cliente_select.currentData()
-        try:
-            link = generate_auth_link(cliente_id)
-            self.append_log(f"[ML] Abra este link e obtenha o code: {link}")
-            code, ok = QInputDialog.getText(self, "Code ML", "Cole o code TG- obtido:")
-            if ok and code:
-                data = exchange_code_for_token(cliente_id, code)
-                self.append_log(f"[ML] Tokens atualizados: {data}")
-        except Exception as e:
-            self.append_log(f"[ML ERROR] {e}")
+        if not cliente_id:
+            self.append_log("Selecione um cliente primeiro", level="error")
+            return
+        # Gera link de autorização via callback do Render
+        url = f"https://erp-for-marketplaces.onrender.com/ml/generate_link/{cliente_id}"
+        self.append_log(f"Abrindo link de autorização ML no navegador: {url}")
+        webbrowser.open(url)
 
     def list_ml_items(self):
         cliente_id = self.cliente_select.currentData()
         self.append_log(f"[ML] Buscando itens do cliente {self.cliente_select.currentText()}...")
+
         try:
             items = get_items(cliente_id)
             count = len(items.get("results", []))
             self.append_log(f"[ML] Total de produtos: {count}")
         except Exception as e:
-            self.append_log(f"[ML ERROR] {e}")
+            # tenta atualizar token se expirou
+            if "expired" in str(e).lower() or "invalid_token" in str(e).lower():
+                self.append_log(f"[ML] Access token expirado, atualizando...")
+                try:
+                    data = refresh_ml_token(cliente_id)
+                    self.append_log(f"[ML] Tokens atualizados: {data}")
+                    items = get_items(cliente_id)
+                    count = len(items.get("results", []))
+                    self.append_log(f"[ML] Total de produtos: {count}")
+                except Exception as e2:
+                    self.append_log(f"[ML ERROR] Falha ao atualizar token: {e2}")
+            else:
+                self.append_log(f"[ML ERROR] {e}", level="error")
 
     # --------------------- WEDROP ---------------------
     def download_wedrop(self):
         cliente_id = self.cliente_select.currentData()
-        self.append_log(f"[Wedrop] Baixando catálogo do cliente {self.cliente_select.currentText()}...")
+        self.append_log(f"Baixando catálogo do cliente {self.cliente_select.currentText()}...")
         try:
             wedrop_catalog(cliente_id)
-            self.append_log(f"[Wedrop] Catálogo baixado com sucesso")
+            self.append_log("Catálogo baixado com sucesso")
         except Exception as e:
-            self.append_log(f"[Wedrop ERROR] {e}")
+            self.append_log(f"Erro Wedrop: {e}", level="error")
 
 # --------------------- EXEC ---------------------
 def run():
